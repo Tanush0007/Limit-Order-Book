@@ -1,95 +1,113 @@
 # Limit Order Book Matching Engine
 
-A C++17 price-time-priority limit order book, matching the design implied by
-the resume bullets: O(1) order lookups, O(log N) insertion/cancellation,
-partial fills, and a leak-checked automated test suite.
+A price-time-priority limit order book and matching engine written in modern
+**C++17**, built around STL containers for O(1) order lookups and O(log N)
+insertion/cancellation, with **zero manual memory management** and a
+**48,000+ assertion automated test suite** (including a 20,000-event
+randomized order-flow simulation) verified leak-free with AddressSanitizer.
 
-## Design
+This project is a systems-and-data-structures sandbox for exploring how real
+exchanges enforce price-time priority, handle partial fills across price
+levels, and keep order cancellation/modification fast under load.
 
-**Price levels** — two `std::map<price, std::list<Order>>` trees, one for
-bids (best price first, i.e. highest) and one for asks (best price first,
-i.e. lowest). The list at each price level preserves FIFO time priority.
-Inserting a new price level is `O(log P)` where `P` is the number of
-distinct price levels on that side; pushing onto an existing level's list is
-`O(1)`.
+---
 
-**Order index (the hash map)** — `std::unordered_map<order_id, OrderHandle>`,
-where `OrderHandle` stores the side, price, and a `std::list<Order>::iterator`
-pointing straight at the order's node. `std::list` iterators are stable
-under insertion/erasure elsewhere in the list, so this gives:
-- `O(1)` average lookup of any order by id
-- `O(1)` removal from its list once located
-- cancel is `O(log N)` overall only because erasing an *emptied* price level
-  from the tree is `O(log P)`
+## Architecture & Core Features
 
-**Matching** — an incoming buy walks `asks_` from `begin()` (lowest ask)
-while its price crosses; an incoming sell walks `bids_` from `begin()`
-(highest bid) while its price crosses. Within a level, the front of the
-list (oldest order) is matched first. Partial fills are handled naturally:
-whichever side has less remaining quantity is fully consumed and the
-other's `remaining` is decremented; the loop continues until either the
-incoming order is filled or the book no longer crosses.
+- **O(1) Order Lookups:** An `unordered_map<order_id, iterator>` points
+  directly at each order's node, so any order can be found, filled, or
+  cancelled without scanning the book.
+- **O(log N) Insertion & Cancellation:** Price levels are held in two
+  `std::map` red-black trees (bids descending, asks ascending). A new price
+  level costs `O(log P)` to insert; an emptied level costs `O(log P)` to
+  erase. Everything else at a level is `O(1)` list operations.
+- **Strict Price-Time Priority:** Within a price level, orders are matched
+  FIFO — oldest order first — exactly like a real exchange, preventing
+  crossed books and unfair fills.
+- **Partial Fills Across Price Levels:** An aggressive order can sweep
+  multiple resting price levels in a single call, partially filling some
+  and fully consuming others, with the correct remainder resting back on
+  the book.
+- **Zero Manual Memory Management:** No raw `new`/`delete` anywhere —
+  ownership lives entirely in `std::map`, `std::list`, and `std::vector`,
+  so there is nothing to leak by construction.
+- **Dynamic Order Modification:** A quantity *decrease* at an unchanged
+  price is applied in place and keeps time priority; a price change or
+  quantity *increase* is handled as cancel + re-submit, correctly losing
+  priority and triggering an immediate match if the new price crosses.
 
-**Modification** — a quantity *decrease* at an unchanged price is applied
-in place and keeps time priority (matches real exchange semantics). A price
-change or a quantity *increase* is implemented as cancel + re-submit, which
-correctly loses priority and can trigger an immediate match if the new
-price crosses the book.
+---
 
-## Files
+## Compilation
+
+No CMake or external dependencies — just a C++17 compiler (developed and
+tested against g++ 13):
 
 ```
-include/Order.h        Order, Trade, AddOrderResult data structures
-include/OrderBook.h    OrderBook class + design notes on complexity
-src/OrderBook.cpp      Matching engine implementation
-src/main.cpp           Small interactive demo
-tests/test_orderbook.cpp  Automated test suite (see below)
-Makefile
-```
-
-## Building & running
-
-```bash
-make demo    # builds and runs the demo program
+make demo    # builds the interactive walkthrough
 make test    # builds with -fsanitize=address,undefined and runs the test suite
-make clean
+make clean   # removes built binaries
 ```
 
-No external dependencies — just a C++17 compiler (tested with g++ 13).
+## Execution Modes
 
-## Test suite
+**1. Demo Mode** — builds up a two-sided book, sends an aggressive order
+that sweeps two price levels, cancels a resting order, and prints the book
+before/after each step.
 
-`tests/test_orderbook.cpp` covers:
-- resting orders that don't cross
-- exact-match and partial fills, both single-level and swept across
-  multiple price levels
-- FIFO price-time priority within a level
-- cancellation, including double-cancel and empty-level cleanup
-- modification: in-place quantity decrease (priority kept) vs. price change /
-  quantity increase (priority lost, may trade immediately)
-- a **20,000-event randomized high-frequency simulation** (mixed adds,
-  cancels, modifies) asserting structural invariants after every event —
-  quantities never go negative, the book is never left crossed, and the
-  order index never drifts from the book's actual contents
+```
+./demo
+```
 
-The `make test` target links with `-fsanitize=address,undefined`, so
-LeakSanitizer runs automatically at exit. Since `OrderBook` never uses raw
-`new`/`delete` (all ownership lives in `std::map`/`std::list`/`std::vector`),
-the suite exits clean with zero leaks reported — confirmed by running it
-during development:
+**2. Test Suite Mode** — runs 10 targeted unit tests (partial fills, FIFO
+priority, cancel/modify semantics) plus a 20,000-event randomized
+high-frequency simulation, all under AddressSanitizer + UndefinedBehavior
+Sanitizer to catch leaks or undefined behavior.
+
+```
+make test
+```
+
+Expected output ends with:
 
 ```
 [simulation] 20000 events, 1435 resting orders, 11315 trades executed, 455 active price levels
+
 48001 checks run, 48001 passed, 0 failed.
 ```
 
-If `valgrind` is available in your environment, `valgrind --leak-check=full
-./test_orderbook` (built via `make demo`-style flags, without the sanitizer)
-works as an additional check.
+---
 
-## Possible extensions
+## Project Structure
 
-- Market orders (no limit price) and IOC/FOK time-in-force
-- Multiple symbols (one `OrderBook` per instrument, keyed in a map)
-- Persistent trade log / replay
-- Lock-free or sharded design for true multi-threaded throughput
+```
+include/Order.h        Order, Trade, and result data structures
+include/OrderBook.h    OrderBook class + complexity design notes
+src/OrderBook.cpp      Matching engine implementation
+src/main.cpp           Interactive demo
+tests/test_orderbook.cpp   Automated test suite
+Makefile
+```
+
+---
+
+## Development Notes
+
+*(Add your own notes here on what you built, learned, or changed while
+working with this — e.g. what you'd explain in an interview about a design
+decision, or a bug you hit and how you fixed it. Left blank intentionally
+rather than a fabricated day-by-day log.)*
+
+---
+
+## Possible Updates
+
+- **Market Orders & Time-in-Force:** Add IOC (immediate-or-cancel) and FOK
+  (fill-or-kill) order types alongside the current limit-only model.
+- **Multi-Symbol Support:** Key a map of `OrderBook` instances by ticker to
+  run several instruments in one process.
+- **Throughput Benchmarking:** Add a `--benchmark` mode measuring real
+  orders/sec and tick-to-trade latency, rather than only correctness tests.
+- **Networked Order Entry:** A minimal TCP or Unix-socket front end so
+  orders can be submitted from an external client instead of only via the
+  in-process API.
