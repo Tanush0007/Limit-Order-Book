@@ -93,10 +93,22 @@ Makefile
 
 ## Development Notes
 
-*(Add your own notes here on what you built, learned, or changed while
-working with this — e.g. what you'd explain in an interview about a design
-decision, or a bug you hit and how you fixed it. Left blank intentionally
-rather than a fabricated day-by-day log.)*
+**1. Day 1 Progress**
+- 1. Define Order (id, side, price, quantity, remaining) in Order.h.
+- 2. Design OrderBook's storage: two std::map<price, std::list<Order>> trees (bids descending, asks ascending) for price-time priority, plus an unordered_map<order_id, iterator> for O(1) lookup.
+- 3. Implement addLimitOrder: match against the opposite side first, rest any remainder.
+- 4. Get exact matches and single-maker partial fills working; sanity-check with a few manual scenarios in main.cpp.
+
+**2. Day 2 Progress**
+- 1. Implement cancelOrder: O(1) average lookup + unlink, erasing the price level only if it empties out.
+  2. Implement modifyOrder: quantity-only decrease at the same price updates in place (keeps time priority); a price change or quantity increase does cancel + re-submit (loses priority, may trade immediately).
+  3. Add targeted tests for FIFO ordering within a level and for both modify paths.
+
+**3. Day 3 Progress**
+- 1. Write test_orderbook.cpp: unit tests for partial fills across multiple price levels, cancellation edge cases, modify semantics.
+  2. Add a large randomized simulation (thousands of mixed add/cancel/modify events) asserting the book never ends up crossed and the order index never drifts from actual book contents.
+  3. Build with AddressSanitizer + UBSan to confirm zero leaks — straightforward here since ownership lives entirely in STL containers, no raw new/delete.
+
 
 ---
 
